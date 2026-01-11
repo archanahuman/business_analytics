@@ -19,8 +19,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # React access
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -54,7 +53,7 @@ STRICT RULES:
 - Use ONLY these columns:
 {columns}
 - Do NOT explain anything
-- Return ONLY valid SQL (NO markdown, NO backticks)
+- Return ONLY valid SQL
 
 User question:
 {question}
@@ -72,9 +71,6 @@ User question:
             "temperature": 0
         }
     )
-
-    if response.status_code != 200:
-        raise Exception(response.text)
 
     raw_sql = response.json()["choices"][0]["message"]["content"]
     return clean_sql(raw_sql)
@@ -98,7 +94,7 @@ def signup(user: UserAuth):
                 {"e": user.email, "p": hash_password(user.password)}
             )
         return {"message": "Signup successful"}
-    except Exception:
+    except:
         return {"error": "User already exists"}
 
 @app.post("/login")
@@ -122,20 +118,23 @@ def login(user: UserAuth):
 def upload_csv(user_email: str, file: UploadFile = File(...)):
     df = pd.read_csv(file.file)
 
-    if df.empty:
-        return {"error": "Uploaded CSV is empty"}
+    # user-friendly name
+    dataset_name = file.filename.replace(".csv", "").replace(" ", "_")
 
-    table_name = f"data_{uuid.uuid4().hex[:8]}"
+    # safe internal table name
+    table_name = f"data_{uuid.uuid4().hex[:6]}"
+
     df.to_sql(table_name, engine, index=False, if_exists="replace")
 
     with engine.begin() as conn:
         conn.execute(
             text("""
-                INSERT INTO datasets (dataset_id, user_email, columns, rows)
-                VALUES (:d, :u, :c, :r)
+                INSERT INTO datasets (dataset_id, dataset_name, user_email, columns, rows)
+                VALUES (:d, :n, :u, :c, :r)
             """),
             {
                 "d": table_name,
+                "n": dataset_name,
                 "u": user_email,
                 "c": df.columns.tolist(),
                 "r": len(df)
@@ -144,17 +143,17 @@ def upload_csv(user_email: str, file: UploadFile = File(...)):
 
     return {
         "dataset_id": table_name,
-        "columns": df.columns.tolist(),
+        "dataset_name": dataset_name,
         "rows": len(df)
     }
 
-# ---------------- GET USER DATASETS ----------------
+# ---------------- GET DATASETS ----------------
 @app.get("/datasets")
 def get_user_datasets(user_email: str):
     with engine.connect() as conn:
         result = conn.execute(
             text("""
-                SELECT dataset_id, columns, rows, created_at
+                SELECT dataset_id, dataset_name, rows, created_at
                 FROM datasets
                 WHERE user_email = :u
                 ORDER BY created_at DESC
@@ -166,43 +165,29 @@ def get_user_datasets(user_email: str):
 # ---------------- ASK QUESTION ----------------
 @app.post("/ask")
 def ask_question(req: AskRequest):
-    try:
-        df_sample = pd.read_sql(
-            f'SELECT * FROM "{req.dataset_id}" LIMIT 1',
-            engine
-        )
-        columns = df_sample.columns.tolist()
+    df_sample = pd.read_sql(
+        f'SELECT * FROM "{req.dataset_id}" LIMIT 1',
+        engine
+    )
+    columns = df_sample.columns.tolist()
 
-        sql = groq_sql_generator(req.query, req.dataset_id, columns)
-        result = run_sql(sql)
+    sql = groq_sql_generator(req.query, req.dataset_id, columns)
+    result = run_sql(sql)
 
-        if not result:
-            return {
-                "answer_text": "No data found.",
-                "data": [],
-                "chart": None
-            }
+    if not result:
+        return {"answer_text": "No data found.", "data": [], "chart": None}
 
-        df = pd.DataFrame(result)
+    df = pd.DataFrame(result)
 
-        answer_text = f"The result contains {len(df)} records."
+    num_cols = df.select_dtypes(include="number").columns
+    cat_cols = df.select_dtypes(include="object").columns
 
-        num_cols = df.select_dtypes(include="number").columns
-        cat_cols = df.select_dtypes(include="object").columns
+    chart = None
+    if len(num_cols) >= 1 and len(cat_cols) >= 1:
+        chart = {"x": cat_cols[0], "y": num_cols[0]}
 
-        chart = None
-        if len(num_cols) >= 1 and len(cat_cols) >= 1:
-            chart = {
-                "type": "bar",
-                "x": cat_cols[0],
-                "y": num_cols[0]
-            }
-
-        return {
-            "answer_text": answer_text,
-            "data": result,
-            "chart": chart
-        }
-
-    except Exception as e:
-        return {"error": str(e)}
+    return {
+        "answer_text": f"The result contains {len(df)} records.",
+        "data": result,
+        "chart": chart
+    }

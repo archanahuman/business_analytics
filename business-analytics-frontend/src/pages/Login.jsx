@@ -10,8 +10,14 @@ function Login() {
   const handleLogin = async () => {
     try {
       const res = await login({ email, password });
-      localStorage.setItem("userEmail", res.data.email);
-      navigate("/dashboard");
+
+      if (res.data.message && res.data.email) {
+        // ✅ save logged-in user
+        localStorage.setItem("userEmail", res.data.email);
+        navigate("/dashboard");
+      } else {
+        alert("Login failed");
+      }
     } catch (err) {
       alert("Invalid credentials");
     }

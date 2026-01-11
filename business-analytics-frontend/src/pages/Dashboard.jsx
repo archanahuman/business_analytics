@@ -1,20 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { uploadCSV, getDatasets, askQuestion } from "../services/api";
 import { useNavigate } from "react-router-dom";
+import html2canvas from "html2canvas";
 
-// 🔹 Recharts imports
+// Recharts
 import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  PieChart,
-  Pie,
-  Cell
+  BarChart, Bar, XAxis, YAxis, Tooltip,
+  PieChart, Pie, Cell,
+  LineChart, Line
 } from "recharts";
 
-// 🔹 Colors for Pie chart
 const COLORS = ["#0088FE", "#00C49F", "#FFBB28", "#FF8042"];
 
 function Dashboard() {
@@ -24,19 +19,24 @@ function Dashboard() {
   const [datasets, setDatasets] = useState([]);
   const [selectedDataset, setSelectedDataset] = useState("");
   const [file, setFile] = useState(null);
+
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
   const [tableData, setTableData] = useState([]);
-  const [chart, setChart] = useState(null);
 
-  // 🔹 Redirect if user refreshes without login
+  const [chartMeta, setChartMeta] = useState(null);
+  const [selectedChartType, setSelectedChartType] = useState("");
+
+  const chartRef = useRef(null);
+
+  // 🔐 Redirect if not logged in
   useEffect(() => {
     if (!userEmail) {
       navigate("/");
     }
   }, [userEmail, navigate]);
 
-  // 🔹 Load old datasets
+  // 📂 Load existing datasets
   useEffect(() => {
     if (userEmail) {
       getDatasets(userEmail).then(res => {
@@ -45,7 +45,7 @@ function Dashboard() {
     }
   }, [userEmail]);
 
-  // 🔹 Upload CSV
+  // ⬆️ Upload CSV
   const handleUpload = async () => {
     if (!file) {
       alert("Please select a CSV file");
@@ -54,18 +54,13 @@ function Dashboard() {
 
     const res = await uploadCSV(userEmail, file);
     alert("CSV uploaded successfully");
-
     setDatasets(prev => [res.data, ...prev]);
   };
 
-  // 🔹 Ask question
+  // ❓ Ask question
   const handleAsk = async () => {
-    if (!selectedDataset) {
-      alert("Please select a dataset");
-      return;
-    }
-    if (!question) {
-      alert("Please enter a question");
+    if (!selectedDataset || !question) {
+      alert("Select dataset and enter a question");
       return;
     }
 
@@ -76,7 +71,19 @@ function Dashboard() {
 
     setAnswer(res.data.answer_text);
     setTableData(res.data.data);
-    setChart(res.data.chart);
+    setChartMeta(res.data.chart);
+    setSelectedChartType("");
+  };
+
+  // 💾 Download chart
+  const downloadChart = async () => {
+    if (!chartRef.current) return;
+
+    const canvas = await html2canvas(chartRef.current);
+    const link = document.createElement("a");
+    link.download = "chart.png";
+    link.href = canvas.toDataURL("image/png");
+    link.click();
   };
 
   return (
@@ -103,7 +110,7 @@ function Dashboard() {
         <option value="">-- Select Dataset --</option>
         {datasets.map(ds => (
           <option key={ds.dataset_id} value={ds.dataset_id}>
-            {ds.dataset_id} ({ds.rows} rows)
+            {ds.dataset_name} ({ds.rows} rows)
           </option>
         ))}
       </select>
@@ -130,7 +137,7 @@ function Dashboard() {
         </>
       )}
 
-      {/* Table */}
+      {/* Result Table */}
       {tableData.length > 0 && (
         <>
           <h3>Result Table</h3>
@@ -155,40 +162,86 @@ function Dashboard() {
         </>
       )}
 
-      {/* 🔹 ACTUAL CHART RENDERING */}
-      {chart && tableData.length > 0 && (
+      {/* Chart Selection */}
+      {chartMeta && tableData.length > 0 && (
+        <>
+          <h3>Select Visualization</h3>
+          <select
+            value={selectedChartType}
+            onChange={e => setSelectedChartType(e.target.value)}
+          >
+            <option value="">-- Select Chart --</option>
+            <option value="bar">Bar Chart</option>
+            <option value="pie">Pie Chart</option>
+            <option value="line">Line Chart</option>
+          </select>
+        </>
+      )}
+
+      {/* Chart Rendering */}
+      {selectedChartType && chartMeta && (
         <>
           <h3>Visualization</h3>
 
-          {/* BAR CHART */}
-          {chart.type === "bar" && (
-            <BarChart width={500} height={300} data={tableData}>
-              <XAxis dataKey={chart.x} />
-              <YAxis />
-              <Tooltip />
-              <Bar dataKey={chart.y} fill="#8884d8" />
-            </BarChart>
-          )}
+          <div ref={chartRef} style={{ background: "#fff", padding: "10px" }}>
+            {/* Bar */}
+            {selectedChartType === "bar" && (
+              <BarChart width={800} height={350} data={tableData}>
+                <XAxis
+                  dataKey={chartMeta.x}
+                  interval={0}
+                  angle={-30}
+                  textAnchor="end"
+                  height={80}
+                />
+                <YAxis />
+                <Tooltip />
+                <Bar dataKey={chartMeta.y} fill="#4f46e5" />
+              </BarChart>
+            )}
 
-          {/* PIE CHART */}
-          {chart.type === "pie" && (
-            <PieChart width={400} height={300}>
-              <Pie
-                data={tableData}
-                dataKey={chart.y}
-                nameKey={chart.x}
-                cx="50%"
-                cy="50%"
-                outerRadius={100}
-                label
-              >
-                {tableData.map((entry, index) => (
-                  <Cell key={index} fill={COLORS[index % COLORS.length]} />
-                ))}
-              </Pie>
-              <Tooltip />
-            </PieChart>
-          )}
+            {/* Pie */}
+            {selectedChartType === "pie" && (
+              <PieChart width={500} height={350}>
+                <Pie
+                  data={tableData}
+                  dataKey={chartMeta.y}
+                  nameKey={chartMeta.x}
+                  outerRadius={120}
+                >
+                  {tableData.map((_, i) => (
+                    <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip />
+              </PieChart>
+            )}
+
+            {/* Line */}
+            {selectedChartType === "line" && (
+              <LineChart width={800} height={350} data={tableData}>
+                <XAxis
+                  dataKey={chartMeta.x}
+                  interval={0}
+                  angle={-30}
+                  textAnchor="end"
+                  height={80}
+                />
+                <YAxis />
+                <Tooltip />
+                <Line
+                  type="monotone"
+                  dataKey={chartMeta.y}
+                  stroke="#16a34a"
+                  strokeWidth={2}
+                />
+              </LineChart>
+            )}
+          </div>
+
+          <button onClick={downloadChart} style={{ marginTop: "10px" }}>
+            Download Chart
+          </button>
         </>
       )}
     </div>
