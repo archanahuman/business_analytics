@@ -28,18 +28,18 @@ app.add_middleware(
 def hash_password(password: str):
     return hashlib.sha256(password.encode()).hexdigest()
 
-def run_sql(query: str):
-    with engine.connect() as conn:
-        result = conn.execute(text(query))
-        return [dict(row._mapping) for row in result]
-
-def clean_sql(sql: str) -> str:
+def clean_sql(sql: str):
     sql = sql.strip()
     if sql.startswith("```"):
         sql = sql.replace("```sql", "").replace("```", "").strip()
     if sql.lower().startswith("sql"):
         sql = sql[3:].strip()
     return sql
+
+def is_safe_sql(sql: str):
+    blocked = ["drop", "delete", "update", "insert", "alter", "truncate"]
+    s = sql.lower()
+    return s.startswith("select") and not any(b in s for b in blocked)
 
 def groq_sql_generator(question, table_name, columns):
     prompt = f"""
@@ -48,6 +48,7 @@ You are a PostgreSQL expert.
 Table name: "{table_name}"
 
 STRICT RULES:
+- ALWAYS wrap the table name in double quotes
 - Use ONLY this table
 - ALL column names MUST be wrapped in double quotes
 - Use ONLY these columns:
@@ -118,10 +119,7 @@ def login(user: UserAuth):
 def upload_csv(user_email: str, file: UploadFile = File(...)):
     df = pd.read_csv(file.file)
 
-    # user-friendly name
     dataset_name = file.filename.replace(".csv", "").replace(" ", "_")
-
-    # safe internal table name
     table_name = f"data_{uuid.uuid4().hex[:6]}"
 
     df.to_sql(table_name, engine, index=False, if_exists="replace")
@@ -172,22 +170,22 @@ def ask_question(req: AskRequest):
     columns = df_sample.columns.tolist()
 
     sql = groq_sql_generator(req.query, req.dataset_id, columns)
-    result = run_sql(sql)
 
-    if not result:
-        return {"answer_text": "No data found.", "data": [], "chart": None}
+    if not is_safe_sql(sql):
+        return {"generated_sql": sql, "error": "Unsafe SQL blocked"}
 
-    df = pd.DataFrame(result)
+    # Case-insensitive filtering
+    sql = sql.replace(" = '", " ILIKE '")
 
-    num_cols = df.select_dtypes(include="number").columns
-    cat_cols = df.select_dtypes(include="object").columns
+    # Limit results (no UI freeze)
+    if "limit" not in sql.lower():
+        sql = sql.rstrip(";") + " LIMIT 200;"
 
-    chart = None
-    if len(num_cols) >= 1 and len(cat_cols) >= 1:
-        chart = {"x": cat_cols[0], "y": num_cols[0]}
+    with engine.connect() as conn:
+        result = conn.execute(text(sql))
+        rows = [dict(row._mapping) for row in result]
 
     return {
-        "answer_text": f"The result contains {len(df)} records.",
-        "data": result,
-        "chart": chart
+        "generated_sql": sql,
+        "data": rows
     }
